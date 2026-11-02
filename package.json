@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --experimental-strip-types --test tests/planner.test.ts"
+    "test": "node --experimental-strip-types --test tests/planner.test.ts",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

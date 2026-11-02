@@ -34,7 +34,7 @@ export const dataService = {
       user_id: taskData.user_id || '',
       title: taskData.title || 'Без названия',
       description: taskData.description || '',
-      status: taskData.status || 'todo',
+      status: taskData.status || 'backlog',
       priority: taskData.priority || 'medium',
       due_date: taskData.due_date || null,
       created_at: new Date().toISOString(),

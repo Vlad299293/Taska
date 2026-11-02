@@ -1,6 +1,7 @@
 import { remainingFor } from './planner';
-import type { PlanTask, Priority, TimedBlock } from './planner';
+import type { PlanTask, TimedBlock } from './planner';
 
+export type Priority = 'low' | 'medium' | 'high';
 export type Status = 'backlog' | 'in_progress' | 'paused' | 'done';
 
 export interface Task {

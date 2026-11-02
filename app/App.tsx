@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { dataService } from '../lib/data-service';
 import { toPlanTask } from '../lib/types';
-import type { Block, Session, Status, Summary, Task } from '../lib/types';
+import type { Block, Session, Status, Summary, Task, Priority } from '../lib/types';
 import { blockEndMs, buildPlan, fitsWindow, locate, replan, schedule, sortByUrgency } from '../lib/planner';
 import type { ReplanMode, TimedBlock } from '../lib/planner';
 import { askPermission, beep, flashTitle, notify, unlockAudio } from '../lib/notify';
@@ -88,7 +88,18 @@ export default function App({ userId, email }: { userId: string; email: string }
     ]);
     if (!t) return setError('Ошибка загрузки задач');
     if (s.error) return setError(s.error.message);
-    setTasks(t as Task[]);
+    setTasks(t.map(lt => ({
+      id: lt.id,
+      workspace_id: '', // LocalTask lacks workspace_id, providing default
+      title: lt.title,
+      estimate_min: 0, // LocalTask lacks estimate_min, providing default
+      priority: lt.priority as Priority,
+      deadline: lt.due_date,
+      description: lt.description,
+      status: lt.status as Status,
+      spent_min: 0, // LocalTask lacks spent_min, providing default
+      created_at: lt.created_at,
+    })));
     const active = (s.data ?? null) as Session | null;
     setSession(active);
     if (active) {

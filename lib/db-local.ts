@@ -4,8 +4,8 @@ export interface LocalTask {
   id: string;
   user_id: string;
   title: string;
-  description: string;
-  status: 'todo' | 'in-progress' | 'done';
+  description: string | null;
+  status: 'backlog' | 'in_progress' | 'paused' | 'done';
   priority: 'low' | 'medium' | 'high';
   due_date: string | null;
   created_at: string;
