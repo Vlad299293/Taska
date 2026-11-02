@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { dataService } from '../lib/data-service';
 import { toPlanTask } from '../lib/types';
 import type { Block, Session, Status, Summary, Task } from '../lib/types';
 import { blockEndMs, buildPlan, fitsWindow, locate, replan, schedule, sortByUrgency } from '../lib/planner';
@@ -12,6 +13,7 @@ import Focus from './Focus';
 import TaskModal from './TaskModal';
 import type { TaskInput } from './TaskModal';
 import { Advice, SummaryModal } from './Parts';
+import SyncIndicator from './SyncIndicator';
 
 function check(res: { error: { message: string } | null }): void {
   if (res.error) throw new Error(res.error.message);
@@ -75,7 +77,7 @@ export default function App({ userId, email }: { userId: string; email: string }
   const load = useCallback(async () => {
     if (!workspaceId) return;
     const [t, s] = await Promise.all([
-      supabase.from('tasks').select('*').eq('workspace_id', workspaceId).order('created_at'),
+      dataService.getTasks(),
       supabase
         .from('sessions')
         .select('*')
@@ -84,15 +86,14 @@ export default function App({ userId, email }: { userId: string; email: string }
         .is('ended_at', null)
         .maybeSingle(),
     ]);
-    if (t.error) return setError(t.error.message);
+    if (!t) return setError('Ошибка загрузки задач');
     if (s.error) return setError(s.error.message);
-    setTasks((t.data ?? []) as Task[]);
+    setTasks(t as Task[]);
     const active = (s.data ?? null) as Session | null;
     setSession(active);
     if (active) {
-      const b = await supabase.from('session_blocks').select('*').eq('session_id', active.id).order('position');
-      if (b.error) return setError(b.error.message);
-      setBlocks((b.data ?? []) as Block[]);
+      const b = await dataService.getBlocks(active.id);
+      setBlocks((b ?? []) as Block[]);
     } else {
       setBlocks([]);
     }
@@ -277,7 +278,7 @@ export default function App({ userId, email }: { userId: string; email: string }
 
   const takeTask = (task: Task) =>
     run(async () => {
-      check(await supabase.from('tasks').update({ status: 'in_progress' }).eq('id', task.id));
+      await dataService.updateTask(task.id, { status: 'in_progress' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'in_progress' as Status } : t));
       await doReplan(after, 'none');
     }, `take:${task.id}`);
@@ -285,14 +286,14 @@ export default function App({ userId, email }: { userId: string; email: string }
   const backToBacklog = (task: Task) =>
     run(async () => {
       if (session) return;
-      check(await supabase.from('tasks').update({ status: 'backlog' }).eq('id', task.id));
+      await dataService.updateTask(task.id, { status: 'backlog' });
       await load();
     }, `back:${task.id}`);
 
   // Пауза задачи (не таймера): если задача активна, её время засчитывается, а следующая стартует сразу
   const pauseTask = (task: Task) =>
     run(async () => {
-      check(await supabase.from('tasks').update({ status: 'paused' }).eq('id', task.id));
+      await dataService.updateTask(task.id, { status: 'paused' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'paused' as Status } : t));
       const activeNow = !!current && current.kind === 'work' && current.taskId === task.id;
       await doReplan(after, activeNow ? 'handover' : 'none');
@@ -300,7 +301,7 @@ export default function App({ userId, email }: { userId: string; email: string }
 
   const markDone = (task: Task) =>
     run(async () => {
-      check(await supabase.from('tasks').update({ status: 'done' }).eq('id', task.id));
+      await dataService.updateTask(task.id, { status: 'done' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'done' as Status } : t));
       const activeNow = !!current && current.kind === 'work' && current.taskId === task.id;
       await doReplan(after, activeNow ? 'cut' : 'none');
@@ -308,7 +309,7 @@ export default function App({ userId, email }: { userId: string; email: string }
 
   const removeTask = (task: Task) =>
     run(async () => {
-      check(await supabase.from('tasks').delete().eq('id', task.id));
+      await dataService.deleteTask(task.id);
       await load();
     }, `remove:${task.id}`);
 
@@ -326,12 +327,12 @@ export default function App({ userId, email }: { userId: string; email: string }
       if (!workspaceId) return;
       const editing = modal?.task ?? null;
       if (editing) {
-        check(await supabase.from('tasks').update(input).eq('id', editing.id));
+        await dataService.updateTask(editing.id, input);
         const after = tasks.map((t) => (t.id === editing.id ? { ...t, ...input } : t));
         if (editing.status === 'in_progress') await doReplan(after, 'none');
         else await load();
       } else {
-        check(await supabase.from('tasks').insert({ ...input, workspace_id: workspaceId }));
+        await dataService.createTask({ ...input, user_id: userId });
         await load();
       }
       setModal(null);
@@ -341,7 +342,7 @@ export default function App({ userId, email }: { userId: string; email: string }
     run(async () => {
       const editing = modal?.task ?? null;
       if (!editing) return;
-      check(await supabase.from('tasks').delete().eq('id', editing.id));
+      await dataService.deleteTask(editing.id);
       await load();
       setModal(null);
     }, 'delete');
@@ -388,6 +389,7 @@ export default function App({ userId, email }: { userId: string; email: string }
           </button>
         </div>
       </header>
+      <SyncIndicator />
       {error && (
         <p className='error' role='alert'>
           {error}
