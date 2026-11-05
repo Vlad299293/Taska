@@ -1,30 +1,35 @@
 # 03-architecture.md
 
 ## Общая схема
-Приложение построено по архитектуре **Client-Server (Serverless)** с использованием Next.js и Supabase.
+Taska — **автономное десктопное приложение** (Standalone Desktop App): оболочка Tauri 2, интерфейс на Next.js
+(статический экспорт в `out/`), данные в локальной SQLite. Сервера и облака нет.
 
-## Компоненты системы
+## Компоненты
 
-### 1. Frontend (Next.js)
-- **UI**: React 19, Tailwind CSS (через globals.css).
-- **State Management**: React Hooks (`useState`, `useEffect`).
-- **Auth**: Интеграция с Supabase Auth.
-- **API**: Прямые вызовы к Supabase Client (с использованием RLS).
+### 1. Frontend (Next.js / React 19)
+- **UI**: React, стили в `app/globals.css`.
+- **State**: React Hooks (`useState`, `useEffect`), глобального стора нет.
+- **Auth**: `lib/auth-service.ts` (локальные профили, хеш PBKDF2 из `lib/passwords.ts`).
+- **Данные**: только через `lib/data-service.ts`; прямых SQL-запросов в компонентах быть не должно.
 
-### 2. Backend (Supabase/PostgreSQL)
-- **Database**: PostgreSQL.
-- **RLS (Row Level Security)**: Основной механизм безопасности. Доступ к данным определяется членством пользователя в воркспейсе (`private.is_member`).
-- **Database Functions (PL/pgSQL)**:
-    - `complete_block`: Логика списания времени и автоматического перевода задачи в `done`.
-    - `finish_session`: Логика очистки активных задач сессии.
-    - `handle_new_user`: Автоматическое создание личного воркспейса при регистрации.
+### 2. Слой данных (SQLite)
+- `lib/sql-driver.ts` — интерфейс драйвера. В приложении это `@tauri-apps/plugin-sql`, в тестах — `node:sqlite`.
+- `lib/db-local.ts` — миграции (`PRAGMA user_version`) и триггеры. Новые изменения схемы добавляются новым элементом
+  массива `MIGRATIONS`, существующие не редактируются.
+- Триггеры (аналог RPC из прежней облачной версии): `complete_block`, `finish_session`, `profile_creates_workspace`.
 
-### 3. Модель данных (ER-диаграмма упрощенно)
-`Workspaces` $\leftarrow$ `WorkspaceMembers` $\leftarrow$ `Users`
-`Workspaces` $\rightarrow$ `Tasks`
-`Workspaces` $\rightarrow$ `Sessions` $\rightarrow$ `SessionBlocks` $\rightarrow$ `Tasks` (опционально)
+### 3. Rust (`src-tauri`)
+Только оболочка и плагин `tauri-plugin-sql`. Права доступа к плагину — в `capabilities/default.json`, CSP запрещает
+внешние запросы.
+
+### 4. Модель данных
+`local_profiles` → `workspaces` → `tasks`
+`workspaces` → `sessions` → `session_blocks` → `tasks` (опционально)
 
 ## Потоки данных
-- **Авторизация**: Пользователь $\rightarrow$ Supabase Auth $\rightarrow$ JWT $\rightarrow$ Frontend.
-- **Управление задачами**: Frontend $\rightarrow$ Supabase Client $\rightarrow$ PostgreSQL (RLS check) $\rightarrow$ Data.
-- **Таймер сессии**: Frontend $\rightarrow$ `complete_block()` RPC $\rightarrow$ Update `Tasks` & `SessionBlocks`.
+- **Вход**: форма → `authService` → SQLite; id вошедшего пользователя хранится в `localStorage`.
+- **Задачи**: компонент → `dataService` → SQLite (ограничения `CHECK` в схеме).
+- **Таймер сессии**: `dataService.completeBlock()` → `UPDATE session_blocks` → триггер списывает время с задачи.
+
+## Не реализовано (см. `changes/feat-desktop-local-db/spec.md`)
+Совместная работа «Хост → Гость» и экспорт/импорт данных. Облачной синхронизации в проекте больше нет.

@@ -1,133 +1,144 @@
-import { localDb, LocalTask, LocalSession } from './db-local';
-import { v4 as uuidv4 } from 'uuid';
+import { localDb } from './db-local';
+import type { SqlValue } from './sql-driver';
+import type { Block, Priority, Session, Status, Task } from './types';
+
+/** Поля задачи, которые разрешено менять снаружи (имена колонок попадают в SQL, поэтому список закрытый). */
+const TASK_FIELDS = ['title', 'estimate_min', 'priority', 'deadline', 'description', 'status'] as const;
+type TaskField = (typeof TASK_FIELDS)[number];
+
+export interface NewTask {
+  title: string;
+  estimate_min: number;
+  priority: Priority;
+  deadline: string | null;
+  description: string | null;
+}
+
+export type TaskPatch = Partial<Pick<Task, TaskField>>;
+
+export interface NewBlock {
+  task_id: string | null;
+  position: number;
+  kind: Block['kind'];
+  planned_min: number;
+  started_at: string;
+}
+
+const placeholders = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
 export const dataService = {
-  /**
-   * Получение всех задач из локальной БД.
-   */
-  async getTasks(workspaceId: string): Promise<LocalTask[]> {
-    return await localDb.query<LocalTask>(
-      'SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC',
-      [workspaceId]
-    );
+  // ---------- Задачи ----------
+
+  getTasks(workspaceId: string): Promise<Task[]> {
+    return localDb.query<Task>('SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at, id', [workspaceId]);
   },
 
-  /**
-   * Создание задачи в локальной БД.
-   */
-  async createTask(taskData: Partial<LocalTask>) {
-    const newTask: LocalTask = {
-      id: uuidv4(),
-      workspace_id: taskData.workspace_id || '',
-      title: taskData.title || 'Без названия',
-      description: taskData.description || '',
-      status: taskData.status || 'backlog',
-      priority: taskData.priority || 'medium',
-      due_date: taskData.due_date || null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+  async getTasksByIds(ids: string[]): Promise<Task[]> {
+    if (ids.length === 0) return [];
+    return localDb.query<Task>(`SELECT * FROM tasks WHERE id IN (${placeholders(ids.length)})`, ids);
+  },
+
+  async createTask(workspaceId: string, input: NewTask): Promise<Task> {
+    const now = new Date().toISOString();
+    const id = crypto.randomUUID();
+    await localDb.execute(
+      `INSERT INTO tasks (id, workspace_id, title, estimate_min, priority, deadline, description, status, spent_min, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'backlog', 0, ?, ?)`,
+      [id, workspaceId, input.title, input.estimate_min, input.priority, input.deadline, input.description, now, now],
+    );
+    return {
+      id,
+      workspace_id: workspaceId,
+      title: input.title,
+      estimate_min: input.estimate_min,
+      priority: input.priority,
+      deadline: input.deadline,
+      description: input.description,
+      status: 'backlog' as Status,
+      spent_min: 0,
+      created_at: now,
     };
-
-    await localDb.execute(
-      'INSERT INTO tasks (id, workspace_id, title, description, status, priority, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [newTask.id, newTask.workspace_id, newTask.title, newTask.description, newTask.status, newTask.priority, newTask.due_date, newTask.created_at, newTask.updated_at]
-    );
-    return newTask;
   },
 
-  /**
-   * Обновление задачи в локальной БД.
-   */
-  async updateTask(id: string, updates: Partial<LocalTask>) {
-    const fields = Object.keys(updates).filter(k => k !== 'id');
-    const values = fields.map(f => (updates as any)[f]);
-    const setClause = fields.map(f => `${f} = ?`).join(', ');
-    
+  async updateTask(id: string, patch: TaskPatch): Promise<void> {
+    const fields = TASK_FIELDS.filter((f) => patch[f] !== undefined);
     if (fields.length === 0) return;
-
-    await localDb.execute(
-      `UPDATE tasks SET ${setClause}, updated_at = ? WHERE id = ?`,
-      [...values, new Date().toISOString(), id]
-    );
+    const set = fields.map((f) => `${f} = ?`).join(', ');
+    const values = fields.map((f) => patch[f] as SqlValue);
+    await localDb.execute(`UPDATE tasks SET ${set}, updated_at = ? WHERE id = ?`, [...values, new Date().toISOString(), id]);
   },
 
-  /**
-   * Удаление задачи.
-   */
-  async deleteTask(id: string) {
+  async deleteTask(id: string): Promise<void> {
     await localDb.execute('DELETE FROM tasks WHERE id = ?', [id]);
   },
 
-  /**
-   * Работа с сессиями (Локально)
-   */
-  async startSession(taskId: string, workspaceId: string) {
-    const session: LocalSession = {
-      id: uuidv4(),
-      task_id: taskId,
-      workspace_id: workspaceId,
-      start_time: new Date().toISOString(),
-      end_time: null,
-      duration: null,
-    };
+  // ---------- Сессии ----------
 
-    await localDb.execute(
-      'INSERT INTO sessions (id, task_id, workspace_id, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)',
-      [session.id, session.task_id, session.workspace_id, session.start_time, session.end_time, session.duration]
+  async getActiveSession(workspaceId: string, userId: string): Promise<Session | null> {
+    const rows = await localDb.query<Session>(
+      'SELECT * FROM sessions WHERE workspace_id = ? AND user_id = ? AND ended_at IS NULL LIMIT 1',
+      [workspaceId, userId],
     );
+    return rows[0] ?? null;
+  },
+
+  async createSession(workspaceId: string, userId: string, windowMin: number): Promise<Session> {
+    const session: Session = {
+      id: crypto.randomUUID(),
+      workspace_id: workspaceId,
+      user_id: userId,
+      window_min: windowMin,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+    };
+    await localDb.execute('INSERT INTO sessions (id, workspace_id, user_id, window_min, started_at) VALUES (?, ?, ?, ?, ?)', [
+      session.id,
+      session.workspace_id,
+      session.user_id,
+      session.window_min,
+      session.started_at,
+    ]);
     return session;
   },
 
-  async stopSession(sessionId: string) {
-    const sessions = await localDb.query<LocalSession>('SELECT * FROM sessions WHERE id = ?', [sessionId]);
-    const session = sessions[0];
-    if (!session) throw new Error('Session not found');
+  async deleteSession(id: string): Promise<void> {
+    await localDb.execute('DELETE FROM sessions WHERE id = ?', [id]);
+  },
 
-    const endTime = new Date().toISOString();
-    const start = new Date(session.start_time).getTime();
-    const end = new Date(endTime).getTime();
-    const duration = Math.floor((end - start) / (1000 * 60)); // duration in minutes
+  /** Закрывает сессию; триггер finish_session разводит незавершённые задачи по «Пауза» и Backlog. */
+  async finishSession(id: string): Promise<void> {
+    await localDb.execute('UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL', [new Date().toISOString(), id]);
+  },
 
-    await localDb.execute(
-      'UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?',
-      [endTime, duration, sessionId]
-    );
+  // ---------- Блоки ----------
+
+  getBlocks(sessionId: string): Promise<Block[]> {
+    return localDb.query<Block>('SELECT * FROM session_blocks WHERE session_id = ? ORDER BY position', [sessionId]);
+  },
+
+  async insertBlocks(sessionId: string, blocks: NewBlock[]): Promise<void> {
+    for (const b of blocks) {
+      await localDb.execute(
+        'INSERT INTO session_blocks (id, session_id, task_id, position, kind, planned_min, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), sessionId, b.task_id, b.position, b.kind, b.planned_min, b.started_at],
+      );
+    }
+  },
+
+  async setBlockMinutes(id: string, minutes: number): Promise<void> {
+    await localDb.execute('UPDATE session_blocks SET planned_min = ? WHERE id = ?', [minutes, id]);
+  },
+
+  async deleteBlocks(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await localDb.execute(`DELETE FROM session_blocks WHERE id IN (${placeholders(ids.length)})`, ids);
   },
 
   /**
-   * Работа с блоками сессий (Локально)
+   * Завершает блок; триггер complete_block списывает время с задачи и при необходимости переводит её в «Готово».
+   * Повторный вызов для того же блока ничего не меняет.
    */
-  async getBlocks(sessionId: string): Promise<any[]> {
-    return await localDb.query(
-      'SELECT * FROM session_blocks WHERE session_id = ? ORDER BY position',
-      [sessionId]
-    );
+  async completeBlock(id: string): Promise<void> {
+    await localDb.execute('UPDATE session_blocks SET ended_at = ? WHERE id = ? AND ended_at IS NULL', [new Date().toISOString(), id]);
   },
-
-  async updateBlock(id: string, updates: any) {
-    const fields = Object.keys(updates);
-    const values = fields.map(f => updates[f]);
-    const setClause = fields.map(f => `${f} = ?`).join(', ');
-    
-    await localDb.execute(
-      `UPDATE session_blocks SET ${setClause} WHERE id = ?`,
-      [...values, id]
-    );
-  },
-
-  async deleteBlocks(ids: string[]) {
-    // SQLite doesn't support .in() like Supabase, using a loop or dynamic query
-    for (const id of ids) {
-      await localDb.execute('DELETE FROM session_blocks WHERE id = ?', [id]);
-    }
-  },
-
-  async insertBlocks(blocks: any[]) {
-    for (const b of blocks) {
-      await localDb.execute(
-        'INSERT INTO session_blocks (id, session_id, task_id, position, kind, planned_min, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [b.id || uuidv4(), b.session_id, b.task_id, b.position, b.kind, b.planned_min, b.started_at, b.ended_at]
-      );
-    }
-  }
 };

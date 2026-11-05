@@ -6,6 +6,7 @@
 
 Перед сборкой убедитесь, что в системе установлены:
 - **Node.js** (LTS версия)
+- **Linux**: пакеты WebKitGTK, см. https://tauri.app/start/prerequisites/
 - **Rust** (устанавливается через [rustup.rs](https://rustup.rs/))
 - **C++ Build Tools** (для Windows: Visual Studio Build Tools с компонентом "Desktop development with C++")
 
@@ -56,10 +57,12 @@ npx tauri build
    - Проверьте наличие всех размеров иконок в `src-tauri/icons/`.
 
 3. **Безопасность (CSP)**:
-   - В `src-tauri/tauri.conf.json` настройте `app > security > csp`, чтобы ограничить сетевые запросы только доверенными доменами (Supabase).
+   - CSP уже задана в `src-tauri/tauri.conf.json` и запрещает любые внешние запросы: приложению сеть не нужна.
+     Если добавите сетевую функцию, расширяйте `connect-src` точечно.
 
-4. **Переменные окружения**:
-   - Убедитесь, что ключи доступа к Supabase в `lib/supabase.ts` соответствуют продакшн-окружению.
+4. **Шрифты**:
+   - Шрифты (IBM Plex Sans, Unbounded) скачиваются с Google Fonts один раз во время `npm run build` и встраиваются в
+     приложение, поэтому на машине сборки нужен интернет, а у пользователей нет.
 
 ## 🛠 Устранение ошибок
 

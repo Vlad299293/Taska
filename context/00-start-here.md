@@ -8,10 +8,10 @@ Taska — это планировщик, который помогает пол�
 Основная идея: «полчаса на задачу, пять минут на перерыв».
 
 ## Быстрый старт для разработчика
-1. **Стек**: Next.js 15, React 19, TypeScript, Supabase.
-2. **База данных**: PostgreSQL (через Supabase) с использованием Row Level Security (RLS) для изоляции данных пользователей.
-3. **Запуск**: `npm run dev`
-4. **Тесты**: `npm run test`
+1. **Стек**: Tauri 2, Next.js 15, React 19, TypeScript, SQLite.
+2. **База данных**: локальная SQLite, схема и триггеры в `lib/db-local.ts`.
+3. **Запуск**: `npm run tauri dev`
+4. **Тесты**: `npm test`, типы: `npm run typecheck`
 
 ## Как работать с этим репозиторием (SDD Flow)
 Все изменения в функционале должны проходить через процесс SDD (Software Design Document):

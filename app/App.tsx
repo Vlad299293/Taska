@@ -1,25 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { authService } from '../lib/auth-service';
 import { dataService } from '../lib/data-service';
 import { toPlanTask } from '../lib/types';
-import type { Block, Session, Status, Summary, Task, Priority } from '../lib/types';
+import type { Block, Session, Status, Summary, Task } from '../lib/types';
+import type { UserProfile } from '../lib/auth-service';
 import { blockEndMs, buildPlan, fitsWindow, locate, replan, schedule, sortByUrgency } from '../lib/planner';
 import type { ReplanMode, TimedBlock } from '../lib/planner';
 import { askPermission, beep, flashTitle, notify, unlockAudio } from '../lib/notify';
-import { localDb } from '../lib/db-local';
-import { v4 as uuidv4 } from 'uuid';
+import { ErrorMapper } from '../lib/errors/error-mapper';
 import Board from './Board';
 import Focus from './Focus';
 import TaskModal from './TaskModal';
 import type { TaskInput } from './TaskModal';
 import { Advice, SummaryModal } from './Parts';
-import SyncIndicator from './SyncIndicator';
 
-function check(res: { error: { message: string } | null }): void {
-  if (res.error) throw new Error(res.error.message);
-}
+const errorText = (e: unknown): string => ErrorMapper.map(e).message;
 
 function useNow(intervalMs = 500): number {
   const [now, setNow] = useState(() => Date.now());
@@ -36,111 +32,39 @@ function signal(kind: 'work' | 'break' | 'end', title: string, body: string): vo
   flashTitle(title);
 }
 
-export default function App({ userId, email, authMode }: { userId: string; email: string; authMode: 'cloud' | 'local' }) {
-  const [workspaceId, setWorkspaceId] = useState<string | null>(null);
-  const [nickname, setNickname] = useState('');
+export default function App({ user, onLogout }: { user: UserProfile; onLogout: () => void }) {
+  const { id: userId, workspaceId } = user;
   const [tasks, setTasks] = useState<Task[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
-  const [signingOut, setSigningOut] = useState(false);
   const [windowMin, setWindowMin] = useState(180);
   const [modal, setModal] = useState<{ task: Task | null } | null>(null);
   const [adviceHidden, setAdviceHidden] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const nowMs = useNow();
 
-  // Рабочее пространство пользователя создаётся в базе при регистрации
-  useEffect(() => {
-    (async () => {
-      if (authMode === 'local') {
-        setWorkspaceId('local-workspace');
-        return;
-      }
-
-      const res = await supabase.from('workspace_members').select('workspace_id').eq('user_id', userId).limit(1);
-      if (res.error) return setError(res.error.message);
-      if (!res.data || res.data.length === 0) {
-        return setError('Не найдено рабочее пространство. Выйдите и войдите снова.');
-      }
-      setWorkspaceId(res.data[0].workspace_id as string);
-    })();
-  }, [userId, authMode]);
-
-  useEffect(() => {
-    supabase
-      .from('profiles')
-      .select('nickname')
-      .eq('user_id', userId)
-      .maybeSingle()
-      .then((res) => {
-        const row = res.data as { nickname: string } | null;
-        if (row) setNickname(row.nickname);
-      });
-  }, [userId]);
-
   const load = useCallback(async () => {
-    if (!workspaceId) return;
-    const [t, s] = await Promise.all([
-      dataService.getTasks(),
-      supabase
-        .from('sessions')
-        .select('*')
-        .eq('workspace_id', workspaceId)
-        .eq('user_id', userId)
-        .is('ended_at', null)
-        .maybeSingle(),
-    ]);
-    if (!t) return setError('Ошибка загрузки задач');
-    if (s.error) return setError(s.error.message);
-    setTasks(t.map(lt => ({
-      id: lt.id,
-      workspace_id: '', // LocalTask lacks workspace_id, providing default
-      title: lt.title,
-      estimate_min: 0, // LocalTask lacks estimate_min, providing default
-      priority: lt.priority as Priority,
-      deadline: lt.due_date,
-      description: lt.description,
-      status: lt.status as Status,
-      spent_min: 0, // LocalTask lacks spent_min, providing default
-      created_at: lt.created_at,
-    })));
-    const active = (s.data ?? null) as Session | null;
-    setSession(active);
-    if (active) {
-      const b = await dataService.getBlocks(active.id);
-      setBlocks((b ?? []) as Block[]);
-    } else {
-      setBlocks([]);
+    try {
+      const [list, active] = await Promise.all([
+        dataService.getTasks(workspaceId),
+        dataService.getActiveSession(workspaceId, userId),
+      ]);
+      setTasks(list);
+      setSession(active);
+      setBlocks(active ? await dataService.getBlocks(active.id) : []);
+      setLoaded(true);
+    } catch (e) {
+      setError(errorText(e));
+      setLoaded(true);
     }
-    setLoaded(true);
   }, [workspaceId, userId]);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  // Синхронизация между устройствами
-  useEffect(() => {
-    if (!workspaceId) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => void load(), 250);
-    };
-    const channel = supabase
-      .channel('planner-' + workspaceId)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, refresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, refresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'session_blocks' }, refresh)
-      .subscribe();
-    return () => {
-      if (timer) clearTimeout(timer);
-      void supabase.removeChannel(channel);
-    };
-  }, [workspaceId, load]);
 
   const timed = useMemo<TimedBlock[]>(
     () =>
@@ -167,7 +91,7 @@ export default function App({ userId, email, authMode }: { userId: string; email
     try {
       await fn();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPending(null);
     }
@@ -176,8 +100,7 @@ export default function App({ userId, email, authMode }: { userId: string; email
   const buildSummary = async (snapshot: Block[]) => {
     const ids = Array.from(new Set(snapshot.filter((b) => b.task_id).map((b) => b.task_id as string)));
     if (ids.length === 0) return;
-    const res = await supabase.from('tasks').select('*').in('id', ids);
-    const list = (res.data ?? []) as Task[];
+    const list = await dataService.getTasksByIds(ids);
     setSummary({
       workMin: snapshot.filter((b) => b.kind === 'work').reduce((sum, b) => sum + b.planned_min, 0),
       done: list.filter((t) => t.status === 'done').map((t) => t.title),
@@ -198,16 +121,16 @@ export default function App({ userId, email, authMode }: { userId: string; email
     syncing.current = true;
     const snapshot = blocks;
     (async () => {
-      for (const b of overdue) await supabase.rpc('complete_block', { p_block_id: b.id });
+      for (const b of overdue) await dataService.completeBlock(b.id);
       if (over) {
-        await supabase.rpc('finish_session', { p_session_id: session.id });
+        await dataService.finishSession(session.id);
         await buildSummary(snapshot);
         setAdviceHidden(false);
         signal('end', 'Сессия завершена', 'Откройте итоги');
       }
       await load();
     })()
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError(errorText(e)))
       .finally(() => {
         syncing.current = false;
       });
@@ -240,55 +163,43 @@ export default function App({ userId, email, authMode }: { userId: string; email
     const { keep, added } = replan(timed, Date.now(), remaining, mode);
     const last = keep.length - 1;
     if (last >= 0 && keep[last].minutes !== blocks[last].planned_min) {
-      check(
-        await supabase.from('session_blocks').update({ planned_min: keep[last].minutes }).eq('id', blocks[last].id),
-      );
+      await dataService.setBlockMinutes(blocks[last].id, keep[last].minutes);
     }
-    const future = blocks.slice(keep.length).map((b) => b.id);
-    if (future.length > 0) check(await supabase.from('session_blocks').delete().in('id', future));
-    if (added.length > 0) {
-      check(
-        await supabase.from('session_blocks').insert(
-          added.map((b, i) => ({
-            session_id: session.id,
-            task_id: b.taskId,
-            position: keep.length + i,
-            kind: b.kind,
-            planned_min: b.minutes,
-            started_at: new Date(b.startMs).toISOString(),
-          })),
-        ),
-      );
-    }
+    await dataService.deleteBlocks(blocks.slice(keep.length).map((b) => b.id));
+    await dataService.insertBlocks(
+      session.id,
+      added.map((b, i) => ({
+        task_id: b.taskId,
+        position: keep.length + i,
+        kind: b.kind,
+        planned_min: b.minutes,
+        started_at: new Date(b.startMs).toISOString(),
+      })),
+    );
     // Блоков больше не осталось: сессию нужно завершить сразу
-    if (keep.length + added.length === 0) check(await supabase.rpc('finish_session', { p_session_id: session.id }));
+    if (keep.length + added.length === 0) await dataService.finishSession(session.id);
     await load();
   };
 
   const startSession = () =>
     run(async () => {
-      if (!workspaceId || previewPlan.length === 0 || !windowValid || !fitsWindow(previewPlan, windowMin)) return;
+      if (previewPlan.length === 0 || !windowValid || !fitsWindow(previewPlan, windowMin)) return;
       unlockAudio();
       void askPermission();
-      const created = await supabase
-        .from('sessions')
-        .insert({ workspace_id: workspaceId, user_id: userId, window_min: windowMin })
-        .select()
-        .single();
-      check(created);
-      const s = created.data as Session;
+      const s = await dataService.createSession(workspaceId, userId, windowMin);
       const rows = schedule(previewPlan, new Date(s.started_at).getTime()).map((b, i) => ({
-        session_id: s.id,
         task_id: b.taskId,
         position: i,
         kind: b.kind,
         planned_min: b.minutes,
         started_at: new Date(b.startMs).toISOString(),
       }));
-      const inserted = await supabase.from('session_blocks').insert(rows);
-      if (inserted.error) {
-        await supabase.from('sessions').delete().eq('id', s.id);
-        throw new Error(inserted.error.message);
+      try {
+        await dataService.insertBlocks(s.id, rows);
+      } catch (e) {
+        // Сессия без блоков бесполезна и мешает начать новую (активная сессия может быть только одна)
+        await dataService.deleteSession(s.id);
+        throw e;
       }
       setSummary(null);
       await load();
@@ -342,7 +253,6 @@ export default function App({ userId, email, authMode }: { userId: string; email
 
   const saveTask = (input: TaskInput) =>
     run(async () => {
-      if (!workspaceId) return;
       const editing = modal?.task ?? null;
       if (editing) {
         await dataService.updateTask(editing.id, input);
@@ -350,7 +260,7 @@ export default function App({ userId, email, authMode }: { userId: string; email
         if (editing.status === 'in_progress') await doReplan(after, 'none');
         else await load();
       } else {
-        await dataService.createTask({ ...input, user_id: userId });
+        await dataService.createTask(workspaceId, input);
         await load();
       }
       setModal(null);
@@ -394,20 +304,12 @@ export default function App({ userId, email, authMode }: { userId: string; email
       <header className='top'>
         <div className='brand'>Taska</div>
         <div className='top-r'>
-          <span className='email'>{nickname || email}</span>
-          <button
-            className='link'
-            disabled={signingOut}
-            onClick={() => {
-              setSigningOut(true);
-              void supabase.auth.signOut();
-            }}
-          >
-            {signingOut ? 'Выходим…' : 'Выйти'}
+          <span className='email'>{user.nickname}</span>
+          <button className='link' onClick={onLogout}>
+            Выйти
           </button>
         </div>
       </header>
-      <SyncIndicator />
       {error && (
         <p className='error' role='alert'>
           {error}

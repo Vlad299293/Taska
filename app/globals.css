@@ -123,3 +123,12 @@ button:active:not(:disabled) { transform: scale(0.95); filter: brightness(0.9); 
   .board { grid-template-columns: 1fr; gap: 12px; }
   .col { min-height: 0; }
 }
+
+/* Уведомления и экран сбоя */
+.toasts { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: grid; gap: 8px; pointer-events: none; }
+.toast { pointer-events: auto; display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; min-width: 260px; max-width: 380px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); font-size: 14px; }
+.toast p { margin: 0; }
+.toast button { background: none; border: 0; color: var(--muted); cursor: pointer; }
+.toast.error, .toast.critical { background: #3a2423; border-color: #7a3b36; color: #ffb4aa; }
+.toast.warning { background: #3a3220; border-color: #7a6a36; color: #ffe29a; }
+.crash { min-height: 100vh; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; }
