@@ -20,7 +20,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const addToast = useCallback((message: string, severity: Severity = 'error') => {
-    const id = Math.random().toString(36).substring(2, 9);
+    const id = crypto.randomUUID();
     setToasts((prev) => [...prev, { id, message, severity }]);
     
     // Автоматическое удаление через 5 секунд
@@ -42,25 +42,13 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   return (
     <NotificationContext.Provider value={{ addToast }}>
       {children}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none">
+      <div className='toasts' aria-live='polite'>
         {toasts.map((toast) => (
-          <div 
-            key={toast.id} 
-            className={`p-4 rounded-lg shadow-lg text-white transition-all duration-300 pointer-events-auto min-w-[300px] ${
-              toast.severity === 'critical' ? 'bg-red-700 border-2 border-red-900' : 
-              toast.severity === 'error' ? 'bg-red-500' : 
-              toast.severity === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
-            }`}
-          >
-            <div className="flex justify-between items-start">
-              <p className="text-sm font-medium">{toast.message}</p>
-              <button 
-                onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
-                className="ml-4 text-white/70 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
+          <div key={toast.id} className={`toast ${toast.severity}`} role={toast.severity === 'info' ? 'status' : 'alert'}>
+            <p>{toast.message}</p>
+            <button type='button' aria-label='Закрыть' onClick={() => setToasts((prev) => prev.filter((t) => t.id !== toast.id))}>
+              ✕
+            </button>
           </div>
         ))}
       </div>

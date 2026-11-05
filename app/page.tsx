@@ -2,29 +2,31 @@
 
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { authService, AuthMode } from '../lib/auth-service';
+import { authService, MIN_PASSWORD } from '../lib/auth-service';
+import type { UserProfile } from '../lib/auth-service';
+import { ErrorMapper } from '../lib/errors/error-mapper';
 import App from './App';
 import Btn from './Btn';
-import { ErrorHandler } from '../lib/errors/error-handler';
 
 export default function Home() {
-  const [authMode, setAuthMode] = useState<'loading' | AuthMode>('loading');
-  const [user, setUser] = useState<any>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [failure, setFailure] = useState('');
 
   useEffect(() => {
-    (async () => {
-      try {
-        await authService.init();
-      } catch (e) {
-        ErrorHandler.handle(e);
-      }
-      const state = authService.getState();
-      setAuthMode(state.mode);
-      setUser(state.user);
-    })();
+    authService
+      .init()
+      .then((u) => {
+        setUser(u);
+        setState('ready');
+      })
+      .catch((e) => {
+        setFailure(ErrorMapper.map(e).message);
+        setState('failed');
+      });
   }, []);
 
-  if (authMode === 'loading') {
+  if (state === 'loading') {
     return (
       <main className='center'>
         <p className='muted loading'>
@@ -34,29 +36,38 @@ export default function Home() {
     );
   }
 
-  if (authMode === 'guest') return <AuthForm />;
+  if (state === 'failed') {
+    return (
+      <main className='center'>
+        <p className='error' role='alert'>
+          {failure}
+        </p>
+      </main>
+    );
+  }
 
-  // Для cloud и local режимов рендерим приложение
+  if (!user) return <AuthForm onAuth={setUser} />;
+
   return (
-    <App 
-      key={user?.id} 
-      userId={user?.id ?? ''} 
-      email={user?.email ?? ''} 
-      authMode={authMode}
+    <App
+      key={user.id}
+      user={user}
+      onLogout={() => {
+        authService.logout();
+        setUser(null);
+      }}
     />
   );
 }
 
 type Mode = 'login' | 'register';
-type NickState = 'idle' | 'checking' | 'free' | 'taken';
 
-function AuthForm() {
+function AuthForm({ onAuth }: { onAuth: (user: UserProfile) => void }) {
   const [mode, setMode] = useState<Mode>('login');
   const [identifier, setIdentifier] = useState('');
   const [nickname, setNickname] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [nick, setNick] = useState<NickState>('idle');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,20 +81,13 @@ function AuthForm() {
     setError(null);
     setBusy(true);
     try {
-      if (mode === 'register') {
-        const res = await authService.register(email.trim(), password, nickname.trim());
-        window.location.reload(); // Перезагрузка для обновления состояния App
-      } else {
-        const res = await authService.login(identifier.trim(), password);
-        window.location.reload();
-      }
-    } catch (err: any) {
-      if (err.message === 'USER_NOT_FOUND_OFFLINE') {
-        setError('Пользователь не найден в локальной базе. Попробуйте зарегистрироваться.');
-      } else {
-        setError(err.message || 'Произошла ошибка');
-      }
-    } finally {
+      const user =
+        mode === 'register'
+          ? await authService.register(nickname, email, password)
+          : await authService.login(identifier, password);
+      onAuth(user);
+    } catch (err) {
+      setError(ErrorMapper.map(err).message);
       setBusy(false);
     }
   };
@@ -120,7 +124,7 @@ function AuthForm() {
             </>
           )}
           <label className='field'>
-            <span>{mode === 'register' ? 'Пароль (от 8 символов)' : 'Пароль'}</span>
+            <span>{mode === 'register' ? `Пароль (от ${MIN_PASSWORD} символов)` : 'Пароль'}</span>
             <input type='password' value={password} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} onChange={(e) => setPassword(e.target.value)} />
           </label>
           {error && (

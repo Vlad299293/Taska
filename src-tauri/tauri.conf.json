@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "taska",
-  "version": "0.1.0",
+  "productName": "Taska",
+  "version": "0.2.0",
   "identifier": "com.vlad299293.taska",
   "build": {
     "frontendDist": "../out",
@@ -12,15 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "taska",
-        "width": 800,
-        "height": 600,
+        "title": "Taska",
+        "width": 1200,
+        "height": 780,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {

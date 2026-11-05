@@ -7,3 +7,5 @@ next-env.d.ts
 .env.local
 .vercel
 .DS_Store
+.claude/settings.local.json
+src-tauri/gen

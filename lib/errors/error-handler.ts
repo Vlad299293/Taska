@@ -10,7 +10,7 @@ export const ErrorHandler = {
    * Основной метод для обработки любой ошибки в приложении.
    * Его следует вызывать в блоках catch.
    */
-  handle(error: any): void {
+  handle(error: unknown): void {
     // 1. Приводим ошибку к типу AppError через маппер
     const appError = ErrorMapper.map(error);
 
