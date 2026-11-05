@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { IBM_Plex_Sans, Unbounded } from 'next/font/google';
+import { NotificationProvider } from '../components/ui/notification-provider';
+import { AppErrorBoundary } from '../components/ui/error-boundary';
 import './globals.css';
 
 const plex = IBM_Plex_Sans({
@@ -31,7 +33,13 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang='ru' className={`${plex.variable} ${unbounded.variable}`}>
-      <body>{children}</body>
+      <body>
+        <NotificationProvider>
+          <AppErrorBoundary>
+            {children}
+          </AppErrorBoundary>
+        </NotificationProvider>
+      </body>
     </html>
   );
 }

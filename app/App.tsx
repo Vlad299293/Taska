@@ -1,13 +1,15 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { authService } from '../lib/auth-service';
 import { dataService } from '../lib/data-service';
 import { toPlanTask } from '../lib/types';
 import type { Block, Session, Status, Summary, Task, Priority } from '../lib/types';
 import { blockEndMs, buildPlan, fitsWindow, locate, replan, schedule, sortByUrgency } from '../lib/planner';
 import type { ReplanMode, TimedBlock } from '../lib/planner';
 import { askPermission, beep, flashTitle, notify, unlockAudio } from '../lib/notify';
+import { localDb } from '../lib/db-local';
+import { v4 as uuidv4 } from 'uuid';
 import Board from './Board';
 import Focus from './Focus';
 import TaskModal from './TaskModal';
@@ -34,7 +36,7 @@ function signal(kind: 'work' | 'break' | 'end', title: string, body: string): vo
   flashTitle(title);
 }
 
-export default function App({ userId, email }: { userId: string; email: string }) {
+export default function App({ userId, email, authMode }: { userId: string; email: string; authMode: 'cloud' | 'local' }) {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [nickname, setNickname] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -53,6 +55,11 @@ export default function App({ userId, email }: { userId: string; email: string }
   // Рабочее пространство пользователя создаётся в базе при регистрации
   useEffect(() => {
     (async () => {
+      if (authMode === 'local') {
+        setWorkspaceId('local-workspace');
+        return;
+      }
+
       const res = await supabase.from('workspace_members').select('workspace_id').eq('user_id', userId).limit(1);
       if (res.error) return setError(res.error.message);
       if (!res.data || res.data.length === 0) {
@@ -60,7 +67,7 @@ export default function App({ userId, email }: { userId: string; email: string }
       }
       setWorkspaceId(res.data[0].workspace_id as string);
     })();
-  }, [userId]);
+  }, [userId, authMode]);
 
   useEffect(() => {
     supabase

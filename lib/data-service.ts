@@ -1,37 +1,24 @@
-import { db, LocalTask, LocalSession } from './db-local';
-import { supabase } from './supabase';
-import { syncEngine } from './sync-engine';
+import { localDb, LocalTask, LocalSession } from './db-local';
 import { v4 as uuidv4 } from 'uuid';
-
-export interface LocalBlock {
-  id: string;
-  session_id: string;
-  task_id: string;
-  position: number;
-  kind: 'work' | 'break';
-  planned_min: number;
-  started_at: string;
-  ended_at: string | null;
-  synced: number;
-}
 
 export const dataService = {
   /**
-   * Получение всех задач.
+   * Получение всех задач из локальной БД.
    */
-  async getTasks(): Promise<LocalTask[]> {
-    const localTasks = await db.tasks.toArray();
-    syncEngine.synchronize().catch(console.error);
-    return localTasks;
+  async getTasks(workspaceId: string): Promise<LocalTask[]> {
+    return await localDb.query<LocalTask>(
+      'SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC',
+      [workspaceId]
+    );
   },
 
   /**
-   * Создание задачи.
+   * Создание задачи в локальной БД.
    */
   async createTask(taskData: Partial<LocalTask>) {
     const newTask: LocalTask = {
       id: uuidv4(),
-      user_id: taskData.user_id || '',
+      workspace_id: taskData.workspace_id || '',
       title: taskData.title || 'Без названия',
       description: taskData.description || '',
       status: taskData.status || 'backlog',
@@ -39,91 +26,108 @@ export const dataService = {
       due_date: taskData.due_date || null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      synced: 0,
     };
 
-    await db.tasks.add(newTask);
-    syncEngine.synchronize().catch(console.error);
+    await localDb.execute(
+      'INSERT INTO tasks (id, workspace_id, title, description, status, priority, due_date, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [newTask.id, newTask.workspace_id, newTask.title, newTask.description, newTask.status, newTask.priority, newTask.due_date, newTask.created_at, newTask.updated_at]
+    );
     return newTask;
   },
 
   /**
-   * Обновление задачи.
+   * Обновление задачи в локальной БД.
    */
   async updateTask(id: string, updates: Partial<LocalTask>) {
-    const updatedAt = new Date().toISOString();
-    await db.tasks.update(id, {
-      ...updates,
-      updated_at: updatedAt,
-      synced: 0,
-    });
-    syncEngine.synchronize().catch(console.error);
+    const fields = Object.keys(updates).filter(k => k !== 'id');
+    const values = fields.map(f => (updates as any)[f]);
+    const setClause = fields.map(f => `${f} = ?`).join(', ');
+    
+    if (fields.length === 0) return;
+
+    await localDb.execute(
+      `UPDATE tasks SET ${setClause}, updated_at = ? WHERE id = ?`,
+      [...values, new Date().toISOString(), id]
+    );
   },
 
   /**
    * Удаление задачи.
    */
   async deleteTask(id: string) {
-    await db.tasks.delete(id);
-    await supabase.from('tasks').delete().eq('id', id);
+    await localDb.execute('DELETE FROM tasks WHERE id = ?', [id]);
   },
 
   /**
-   * Работа с сессиями
+   * Работа с сессиями (Локально)
    */
-  async startSession(taskId: string, userId: string) {
-    const session = {
+  async startSession(taskId: string, workspaceId: string) {
+    const session: LocalSession = {
       id: uuidv4(),
       task_id: taskId,
-      user_id: userId,
+      workspace_id: workspaceId,
       start_time: new Date().toISOString(),
       end_time: null,
       duration: null,
-      synced: 0,
     };
 
-    await db.sessions.add(session);
-    syncEngine.synchronize().catch(console.error);
+    await localDb.execute(
+      'INSERT INTO sessions (id, task_id, workspace_id, start_time, end_time, duration) VALUES (?, ?, ?, ?, ?, ?)',
+      [session.id, session.task_id, session.workspace_id, session.start_time, session.end_time, session.duration]
+    );
     return session;
   },
 
   async stopSession(sessionId: string) {
-    const session = await db.sessions.get(sessionId);
+    const sessions = await localDb.query<LocalSession>('SELECT * FROM sessions WHERE id = ?', [sessionId]);
+    const session = sessions[0];
     if (!session) throw new Error('Session not found');
 
     const endTime = new Date().toISOString();
-    const start = new Date(session.start_time);
-    const end = new Date(endTime);
-    const duration = Math.floor((end.getTime() - start.getTime()) / 1000);
+    const start = new Date(session.start_time).getTime();
+    const end = new Date(endTime).getTime();
+    const duration = Math.floor((end - start) / (1000 * 60)); // duration in minutes
 
-    await db.sessions.update(sessionId, {
-      end_time: endTime,
-      duration: duration,
-      synced: 0,
-    });
-
-    syncEngine.synchronize().catch(console.error);
+    await localDb.execute(
+      'UPDATE sessions SET end_time = ?, duration = ? WHERE id = ?',
+      [endTime, duration, sessionId]
+    );
   },
 
   /**
-   * Работа с блоками сессий
+   * Работа с блоками сессий (Локально)
    */
   async getBlocks(sessionId: string): Promise<any[]> {
-    // Временно возвращаем данные из supabase, так как в LocalDB еще нет таблицы blocks
-    // В следующем шаге добавим её в db-local.ts
-    const { data } = await supabase.from('session_blocks').select('*').eq('session_id', sessionId).order('position');
-    return data || [];
+    return await localDb.query(
+      'SELECT * FROM session_blocks WHERE session_id = ? ORDER BY position',
+      [sessionId]
+    );
   },
 
   async updateBlock(id: string, updates: any) {
-    await supabase.from('session_blocks').update(updates).eq('id', id);
+    const fields = Object.keys(updates);
+    const values = fields.map(f => updates[f]);
+    const setClause = fields.map(f => `${f} = ?`).join(', ');
+    
+    await localDb.execute(
+      `UPDATE session_blocks SET ${setClause} WHERE id = ?`,
+      [...values, id]
+    );
   },
 
   async deleteBlocks(ids: string[]) {
-    await supabase.from('session_blocks').delete().in('id', ids);
+    // SQLite doesn't support .in() like Supabase, using a loop or dynamic query
+    for (const id of ids) {
+      await localDb.execute('DELETE FROM session_blocks WHERE id = ?', [id]);
+    }
   },
 
   async insertBlocks(blocks: any[]) {
-    await supabase.from('session_blocks').insert(blocks);
+    for (const b of blocks) {
+      await localDb.execute(
+        'INSERT INTO session_blocks (id, session_id, task_id, position, kind, planned_min, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [b.id || uuidv4(), b.session_id, b.task_id, b.position, b.kind, b.planned_min, b.started_at, b.ended_at]
+      );
+    }
   }
 };

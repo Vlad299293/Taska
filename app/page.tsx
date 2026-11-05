@@ -2,22 +2,29 @@
 
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import type { Session as AuthSession } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
-import { NICKNAME_RE, checkNickname, login, register } from '../lib/auth';
+import { authService, AuthMode } from '../lib/auth-service';
 import App from './App';
 import Btn from './Btn';
+import { ErrorHandler } from '../lib/errors/error-handler';
 
 export default function Home() {
-  const [auth, setAuth] = useState<AuthSession | null | undefined>(undefined);
+  const [authMode, setAuthMode] = useState<'loading' | AuthMode>('loading');
+  const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setAuth(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => setAuth(next));
-    return () => data.subscription.unsubscribe();
+    (async () => {
+      try {
+        await authService.init();
+      } catch (e) {
+        ErrorHandler.handle(e);
+      }
+      const state = authService.getState();
+      setAuthMode(state.mode);
+      setUser(state.user);
+    })();
   }, []);
 
-  if (auth === undefined) {
+  if (authMode === 'loading') {
     return (
       <main className='center'>
         <p className='muted loading'>
@@ -26,8 +33,18 @@ export default function Home() {
       </main>
     );
   }
-  if (!auth) return <AuthForm />;
-  return <App key={auth.user.id} userId={auth.user.id} email={auth.user.email ?? ''} />;
+
+  if (authMode === 'guest') return <AuthForm />;
+
+  // Для cloud и local режимов рендерим приложение
+  return (
+    <App 
+      key={user?.id} 
+      userId={user?.id ?? ''} 
+      email={user?.email ?? ''} 
+      authMode={authMode}
+    />
+  );
 }
 
 type Mode = 'login' | 'register';
@@ -43,28 +60,6 @@ function AuthForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Проверка уникальности никнейма пока пользователь печатает
-  useEffect(() => {
-    if (mode !== 'register') return;
-    setNick('idle');
-    const name = nickname.trim();
-    if (!NICKNAME_RE.test(name)) return;
-    setNick('checking');
-    let cancelled = false;
-    const id = setTimeout(async () => {
-      try {
-        const free = await checkNickname(name);
-        if (!cancelled) setNick(free ? 'free' : 'taken');
-      } catch {
-        if (!cancelled) setNick('idle');
-      }
-    }, 400);
-    return () => {
-      cancelled = true;
-      clearTimeout(id);
-    };
-  }, [nickname, mode]);
-
   const switchMode = (next: Mode) => {
     setMode(next);
     setError(null);
@@ -73,37 +68,25 @@ function AuthForm() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (mode === 'register') {
-      if (!NICKNAME_RE.test(nickname.trim())) {
-        return setError('Никнейм: от 3 до 20 символов, только буквы, цифры, _ и -.');
-      }
-      if (nick === 'taken') return setError('Этот никнейм уже занят.');
-      if (password.length < 8) return setError('Пароль: не короче 8 символов.');
-    }
     setBusy(true);
     try {
-      if (mode === 'register') await register(nickname.trim(), email.trim(), password);
-      else await login(identifier.trim(), password);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (mode === 'register') {
+        const res = await authService.register(email.trim(), password, nickname.trim());
+        window.location.reload(); // Перезагрузка для обновления состояния App
+      } else {
+        const res = await authService.login(identifier.trim(), password);
+        window.location.reload();
+      }
+    } catch (err: any) {
+      if (err.message === 'USER_NOT_FOUND_OFFLINE') {
+        setError('Пользователь не найден в локальной базе. Попробуйте зарегистрироваться.');
+      } else {
+        setError(err.message || 'Произошла ошибка');
+      }
     } finally {
       setBusy(false);
     }
   };
-
-  const name = nickname.trim();
-  const hint =
-    name === ''
-      ? ''
-      : !NICKNAME_RE.test(name)
-        ? 'От 3 до 20 символов: буквы, цифры, _ и -.'
-        : nick === 'checking'
-          ? 'Проверяю…'
-          : nick === 'free'
-            ? 'Никнейм свободен'
-            : nick === 'taken'
-              ? 'Этот никнейм занят'
-              : '';
 
   return (
     <main className='center'>
@@ -129,7 +112,6 @@ function AuthForm() {
               <label className='field'>
                 <span>Никнейм</span>
                 <input value={nickname} maxLength={20} autoComplete='username' autoCapitalize='none' onChange={(e) => setNickname(e.target.value)} />
-                {hint && <small className={nick === 'free' && NICKNAME_RE.test(name) ? 'hint ok' : nick === 'taken' ? 'hint bad' : 'hint'}>{hint}</small>}
               </label>
               <label className='field'>
                 <span>Почта</span>
