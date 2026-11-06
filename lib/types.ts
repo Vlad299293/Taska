@@ -15,6 +15,19 @@ export interface Task {
   status: Status;
   spent_min: number;
   created_at: string;
+  /** Исполнитель (id профиля). Всегда заполнен: у старых задач это владелец пространства. */
+  assignee_id: string;
+  /** Кто создал задачу: в cowork хост может ставить задачи другим. */
+  created_by: string;
+}
+
+/** Участник рабочего пространства: хост или гость, присоединившийся в режиме cowork. */
+export interface Participant {
+  id: string;
+  name: string;
+  role: 'host' | 'member';
+  /** false, если участника удалили, а его задачи остались */
+  active: boolean;
 }
 
 export interface Session {

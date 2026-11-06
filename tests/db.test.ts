@@ -143,5 +143,5 @@ test('удаление блоков по списку, пустой список
 test('миграции идемпотентны: повторное открытие базы ничего не ломает', async () => {
   await setup();
   const [{ user_version }] = await localDb.query<{ user_version: number }>('PRAGMA user_version');
-  assert.equal(user_version, 1);
+  assert.equal(user_version, 2);
 });

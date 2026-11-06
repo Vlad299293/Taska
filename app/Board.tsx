@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { Session, Status, Task } from '../lib/types';
+import type { CSSProperties } from 'react';
+import type { Participant, Session, Status, Task } from '../lib/types';
+import { personColor } from '../lib/cowork/people';
+import { PersonChip } from './PersonChip';
 import { PRIORITY_LABEL } from '../lib/types';
 import { blockEndMs, formatClock, sortByUrgency } from '../lib/planner';
 import type { TimedBlock } from '../lib/planner';
@@ -16,6 +19,12 @@ const COLUMNS: { key: Status; title: string; empty: string }[] = [
 
 interface Props {
   tasks: Task[];
+  /** Кто сейчас за компьютером: действия «Взять», «Пауза», «Готово» доступны только над своими задачами */
+  meId: string;
+  isHost: boolean;
+  people: Map<string, Participant>;
+  /** В режиме cowork на карточке показывается исполнитель */
+  showOwner: boolean;
   session: Session | null;
   current: TimedBlock | undefined;
   nowMs: number;
@@ -56,7 +65,10 @@ function formatDate(iso: string): string {
 function Card({ task, p, register }: { task: Task; p: Props; register: Register }) {
   const [confirming, setConfirming] = useState(false);
   const active = !!p.current && p.current.kind === 'work' && p.current.taskId === task.id;
-  const draggable = task.status === 'backlog' || task.status === 'paused' || task.status === 'in_progress';
+  const own = task.assignee_id === p.meId;
+  const owner = p.people.get(task.assignee_id);
+  const canEdit = own || p.isHost;
+  const draggable = own && (task.status === 'backlog' || task.status === 'paused' || task.status === 'in_progress');
   const remain =
     active && p.current ? Math.min(blockEndMs(p.current) - p.nowMs, p.current.minutes * 60000) / 1000 : 0;
   // Состояние кнопки: у нужной — крутилка, у остальных — блокировка, пока идёт действие
@@ -75,13 +87,17 @@ function Card({ task, p, register }: { task: Task; p: Props; register: Register 
   return (
     <article
       ref={(el) => register(task.id, el)}
-      className={`card s-${task.status} p-${task.priority}${active ? ' is-active' : ''}`}
+      className={`card s-${task.status} p-${task.priority}${active ? ' is-active' : ''}${p.showOwner ? ' has-owner' : ''}${p.showOwner && own ? ' is-mine' : ''}`}
+      style={p.showOwner ? ({ '--who': personColor(task.assignee_id) } as CSSProperties) : undefined}
       draggable={draggable}
       onDragStart={(e) => {
         e.dataTransfer.setData('text/plain', task.id);
         e.dataTransfer.effectAllowed = 'move';
       }}
     >
+      {p.showOwner && (
+        <PersonChip id={task.assignee_id} name={owner?.name ?? 'Неизвестный'} you={own} inactive={owner ? !owner.active : false} />
+      )}
       <h4>{task.title}</h4>
       <p className='meta'>
         {task.estimate_min} мин · <span className='prio'>{PRIORITY_LABEL[task.priority]}</span>
@@ -100,30 +116,32 @@ function Card({ task, p, register }: { task: Task; p: Props; register: Register 
         </span>
       )}
       <div className='actions'>
-        {(task.status === 'backlog' || task.status === 'paused') && (
+        {own && (task.status === 'backlog' || task.status === 'paused') && (
           <Btn className='small' {...state('take')} onClick={() => p.onTake(task)}>
             Взять
           </Btn>
         )}
-        {task.status === 'in_progress' && (
+        {own && task.status === 'in_progress' && (
           <Btn className='small ghost' {...state('pause')} onClick={() => p.onPause(task)}>
             Пауза
           </Btn>
         )}
-        {task.status === 'in_progress' && !p.session && (
+        {own && task.status === 'in_progress' && !p.session && (
           <Btn className='small ghost' {...state('back')} onClick={() => p.onBack(task)}>
             В Backlog
           </Btn>
         )}
-        {task.status === 'in_progress' && p.session && (
+        {own && task.status === 'in_progress' && p.session && (
           <Btn className='small' {...state('done')} onClick={() => p.onDone(task)}>
             Готово
           </Btn>
         )}
-        <Btn className='small ghost' disabled={p.pending !== null} onClick={() => p.onEdit(task)}>
-          Изменить
-        </Btn>
-        {task.status === 'done' && (
+        {canEdit && (
+          <Btn className='small ghost' disabled={p.pending !== null} onClick={() => p.onEdit(task)}>
+            Изменить
+          </Btn>
+        )}
+        {canEdit && task.status === 'done' && (
           <Btn
             className={confirming ? 'small danger' : 'small ghost icon'}
             aria-label='Удалить задачу'

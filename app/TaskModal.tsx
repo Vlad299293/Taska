@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { Priority } from '../lib/planner';
-import type { Task } from '../lib/types';
+import type { Participant, Task } from '../lib/types';
 import Btn from './Btn';
 
 export interface TaskInput {
@@ -12,10 +12,18 @@ export interface TaskInput {
   priority: Priority;
   deadline: string | null;
   description: string | null;
+  /** Кому поставить задачу. Заполняется только когда хост выбирает исполнителя. */
+  assignee_id?: string;
 }
 
 interface Props {
   task: Task | null;
+  meId: string;
+  /** Участники, которым можно поставить задачу */
+  people: Participant[];
+  /** Хост в режиме cowork может ставить задачи другим */
+  canAssign: boolean;
+  defaultAssignee: string;
   canDelete: boolean;
   pending: string | null;
   onSave: (input: TaskInput) => void;
@@ -23,7 +31,11 @@ interface Props {
   onClose: () => void;
 }
 
-export default function TaskModal({ task, canDelete, pending, onSave, onDelete, onClose }: Props) {
+export default function TaskModal({ task, meId, people, canAssign, defaultAssignee, canDelete, pending, onSave, onDelete, onClose }: Props) {
+  // Передать можно только нетронутую задачу: над начатой уже работает её исполнитель
+  const reassignable = canAssign && (!task || task.status === 'backlog');
+  const [assignee, setAssignee] = useState(task?.assignee_id ?? defaultAssignee);
+  const owner = people.find((p) => p.id === (task?.assignee_id ?? ''));
   const [title, setTitle] = useState(task?.title ?? '');
   const [estimate, setEstimate] = useState(String(task?.estimate_min ?? 30));
   const [priority, setPriority] = useState<Priority>(task?.priority ?? 'medium');
@@ -55,6 +67,7 @@ export default function TaskModal({ task, canDelete, pending, onSave, onDelete, 
       priority,
       deadline: deadline === '' ? null : deadline,
       description: text === '' ? null : text,
+      ...(reassignable ? { assignee_id: assignee } : {}),
     });
   };
 
@@ -66,6 +79,25 @@ export default function TaskModal({ task, canDelete, pending, onSave, onDelete, 
           <span>Название</span>
           <input value={title} maxLength={120} autoFocus onChange={(e) => setTitle(e.target.value)} />
         </label>
+        {reassignable && (
+          <label className='field'>
+            <span>Исполнитель</span>
+            <select value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+              {people.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.id === meId ? ' (вы)' : ''}
+                  {p.role === 'host' ? ' · хост' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {task && canAssign && !reassignable && (
+          <p className='hint'>
+            Исполнитель: {owner?.name ?? 'участник'}. Начатую задачу передать нельзя.
+          </p>
+        )}
         <div className='row'>
           <label className='field'>
             <span>Оценка, минут</span>

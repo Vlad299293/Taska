@@ -5,7 +5,7 @@ import type { FormEvent } from 'react';
 import { authService, MIN_PASSWORD } from '../lib/auth-service';
 import type { UserProfile } from '../lib/auth-service';
 import { ErrorMapper } from '../lib/errors/error-mapper';
-import App from './App';
+import Shell from './Shell';
 import Btn from './Btn';
 
 export default function Home() {
@@ -49,7 +49,7 @@ export default function Home() {
   if (!user) return <AuthForm onAuth={setUser} />;
 
   return (
-    <App
+    <Shell
       key={user.id}
       user={user}
       onLogout={() => {
