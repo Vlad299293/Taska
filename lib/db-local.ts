@@ -4,10 +4,10 @@ import type { SqlDriver, SqlValue } from './sql-driver';
 
 /**
  * Миграции схемы. Номер версии хранится в PRAGMA user_version.
- * Каждая миграция идемпотентна (IF NOT EXISTS), поэтому прерванный запуск можно безопасно повторить.
+ * Каждая миграция идемпотентна (IF NOT EXISTS, проверка колонок перед ALTER), поэтому прерванный запуск можно безопасно повторить.
  * Новое изменение схемы — это новый элемент в конце массива, старые не правим.
  */
-const MIGRATIONS: string[][] = [
+export const MIGRATIONS: string[][] = [
   [
     `CREATE TABLE IF NOT EXISTS local_profiles (
        id            TEXT PRIMARY KEY,
@@ -88,7 +88,50 @@ const MIGRATIONS: string[][] = [
        WHERE workspace_id = NEW.workspace_id AND status = 'in_progress';
      END`,
   ],
+
+  // v2: режим cowork. Задача получает исполнителя, участники хранятся как профили особого вида.
+  [
+    // 'member' — участник чужого рабочего пространства: у него нет пароля и своего пространства, войти под ним нельзя
+    `ALTER TABLE local_profiles ADD COLUMN kind TEXT NOT NULL DEFAULT 'account' CHECK (kind IN ('account', 'member'))`,
+    `ALTER TABLE local_profiles ADD COLUMN display_name TEXT`,
+    `ALTER TABLE workspaces ADD COLUMN cowork INTEGER NOT NULL DEFAULT 0 CHECK (cowork IN (0, 1))`,
+    `ALTER TABLE workspaces ADD COLUMN invite_code TEXT`,
+    // NULL в assignee_id/created_by у старых задач означает владельца пространства (см. TASK_SELECT в data-service)
+    `ALTER TABLE tasks ADD COLUMN assignee_id TEXT`,
+    `ALTER TABLE tasks ADD COLUMN created_by TEXT`,
+    `CREATE INDEX IF NOT EXISTS tasks_assignee_idx ON tasks(workspace_id, assignee_id)`,
+    `CREATE TABLE IF NOT EXISTS cowork_members (
+       workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+       profile_id   TEXT NOT NULL REFERENCES local_profiles(id) ON DELETE CASCADE,
+       token_hash   TEXT NOT NULL,
+       joined_at    TEXT NOT NULL,
+       PRIMARY KEY (workspace_id, profile_id)
+     )`,
+
+    // Личное пространство создаётся только настоящим аккаунтам, не участникам
+    `DROP TRIGGER IF EXISTS profile_creates_workspace`,
+    `CREATE TRIGGER profile_creates_workspace AFTER INSERT ON local_profiles WHEN NEW.kind = 'account'
+     BEGIN
+       INSERT INTO workspaces (id, name, owner_id, created_at)
+       VALUES (lower(hex(randomblob(16))), 'Личное', NEW.id, NEW.created_at);
+     END`,
+
+    // Сессия затрагивает только задачи своего владельца, а не всех участников пространства
+    `DROP TRIGGER IF EXISTS finish_session`,
+    `CREATE TRIGGER finish_session AFTER UPDATE OF ended_at ON sessions
+     WHEN OLD.ended_at IS NULL AND NEW.ended_at IS NOT NULL
+     BEGIN
+       UPDATE tasks
+       SET status     = CASE WHEN spent_min > 0 THEN 'paused' ELSE 'backlog' END,
+           updated_at = NEW.ended_at
+       WHERE workspace_id = NEW.workspace_id
+         AND status = 'in_progress'
+         AND COALESCE(assignee_id, (SELECT owner_id FROM workspaces WHERE id = NEW.workspace_id)) = NEW.user_id;
+     END`,
+  ],
 ];
+
+const ADD_COLUMN_RE = /^\s*ALTER TABLE (\w+) ADD COLUMN (\w+)\b/i;
 
 /**
  * Сервис локальной базы данных SQLite.
@@ -135,7 +178,15 @@ export class LocalDBService {
     const rows = await this.query<{ user_version: number }>('PRAGMA user_version');
     const current = Number(rows[0]?.user_version ?? 0);
     for (let v = current; v < MIGRATIONS.length; v++) {
-      for (const statement of MIGRATIONS[v]) await this.execute(statement);
+      for (const statement of MIGRATIONS[v]) {
+        // ALTER ... ADD COLUMN сам по себе не идемпотентен: после прерванного запуска пропускаем уже добавленные колонки
+        const add = ADD_COLUMN_RE.exec(statement);
+        if (add) {
+          const exists = await this.query('SELECT 1 FROM pragma_table_info(?) WHERE name = ?', [add[1], add[2]]);
+          if (exists.length > 0) continue;
+        }
+        await this.execute(statement);
+      }
       await this.execute(`PRAGMA user_version = ${v + 1}`);
     }
   }

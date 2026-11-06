@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { dataService } from '../lib/data-service';
+import type { ReactNode } from 'react';
+import type { LiveApi } from '../lib/data-api';
 import { toPlanTask } from '../lib/types';
-import type { Block, Session, Status, Summary, Task } from '../lib/types';
-import type { UserProfile } from '../lib/auth-service';
+import type { Block, Participant, Session, Status, Summary, Task } from '../lib/types';
 import { blockEndMs, buildPlan, fitsWindow, locate, replan, schedule, sortByUrgency } from '../lib/planner';
 import type { ReplanMode, TimedBlock } from '../lib/planner';
 import { askPermission, beep, flashTitle, notify, unlockAudio } from '../lib/notify';
@@ -14,6 +14,7 @@ import Focus from './Focus';
 import TaskModal from './TaskModal';
 import type { TaskInput } from './TaskModal';
 import { Advice, SummaryModal } from './Parts';
+import { PeopleBar } from './PersonChip';
 
 const errorText = (e: unknown): string => ErrorMapper.map(e).message;
 
@@ -32,9 +33,28 @@ function signal(kind: 'work' | 'break' | 'end', title: string, body: string): vo
   flashTitle(title);
 }
 
-export default function App({ user, onLogout }: { user: UserProfile; onLogout: () => void }) {
+export interface AppUser {
+  id: string;
+  workspaceId: string;
+  nickname: string;
+}
+
+interface AppProps {
+  user: AppUser;
+  /** Откуда берутся данные: локальная база (обычный режим, хост) или хост по сети (гость) */
+  api: LiveApi;
+  /** Режим cowork: видны задачи всех участников */
+  cowork: boolean;
+  isHost: boolean;
+  headerSlot?: ReactNode;
+  onLogout: () => void;
+}
+
+export default function App({ user, api, cowork, isHost, headerSlot, onLogout }: AppProps) {
   const { id: userId, workspaceId } = user;
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [people, setPeople] = useState<Participant[]>([]);
+  const [filter, setFilter] = useState<string>('all');
   const [session, setSession] = useState<Session | null>(null);
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -48,23 +68,41 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
 
   const load = useCallback(async () => {
     try {
-      const [list, active] = await Promise.all([
-        dataService.getTasks(workspaceId),
-        dataService.getActiveSession(workspaceId, userId),
+      const [list, active, participants] = await Promise.all([
+        api.getTasks(workspaceId),
+        api.getActiveSession(workspaceId, userId),
+        api.getParticipants(workspaceId),
       ]);
       setTasks(list);
+      setPeople(participants);
       setSession(active);
-      setBlocks(active ? await dataService.getBlocks(active.id) : []);
+      setBlocks(active ? await api.getBlocks(active.id) : []);
+      setError(null);
       setLoaded(true);
     } catch (e) {
       setError(errorText(e));
       setLoaded(true);
     }
-  }, [workspaceId, userId]);
+  }, [api, workspaceId, userId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Изменения от других участников (и свои с другого окна) приходят сюда и обновляют список
+  useEffect(() => api.subscribe(() => void load()), [api, load]);
+
+  // Планировать и работать можно только со своими задачами; чужие видны на доске, но не попадают в план
+  const mine = useMemo(() => tasks.filter((t) => t.assignee_id === userId), [tasks, userId]);
+  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
+  const visible = useMemo(() => {
+    if (!cowork) return mine;
+    return filter === 'all' ? tasks : tasks.filter((t) => t.assignee_id === filter);
+  }, [cowork, tasks, mine, filter]);
+  // Если выбранный участник пропал из списка, возвращаемся к «Все»
+  useEffect(() => {
+    if (filter !== 'all' && !people.some((p) => p.id === filter)) setFilter('all');
+  }, [people, filter]);
 
   const timed = useMemo<TimedBlock[]>(
     () =>
@@ -80,7 +118,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
   const curIndex = pos ? (pos.state === 'running' ? pos.index : pos.state === 'before' ? 0 : -1) : -1;
   const current = curIndex >= 0 ? timed[curIndex] : undefined;
 
-  const inWork = useMemo(() => tasks.filter((t) => t.status === 'in_progress'), [tasks]);
+  const inWork = useMemo(() => mine.filter((t) => t.status === 'in_progress'), [mine]);
   const previewPlan = useMemo(() => buildPlan(inWork.map((t) => toPlanTask(t))), [inWork]);
   const windowValid = Number.isInteger(windowMin) && windowMin >= 30 && windowMin <= 720 && windowMin % 5 === 0;
 
@@ -100,7 +138,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
   const buildSummary = async (snapshot: Block[]) => {
     const ids = Array.from(new Set(snapshot.filter((b) => b.task_id).map((b) => b.task_id as string)));
     if (ids.length === 0) return;
-    const list = await dataService.getTasksByIds(ids);
+    const list = await api.getTasksByIds(ids);
     setSummary({
       workMin: snapshot.filter((b) => b.kind === 'work').reduce((sum, b) => sum + b.planned_min, 0),
       done: list.filter((t) => t.status === 'done').map((t) => t.title),
@@ -121,9 +159,9 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
     syncing.current = true;
     const snapshot = blocks;
     (async () => {
-      for (const b of overdue) await dataService.completeBlock(b.id);
+      for (const b of overdue) await api.completeBlock(b.id);
       if (over) {
-        await dataService.finishSession(session.id);
+        await api.finishSession(session.id);
         await buildSummary(snapshot);
         setAdviceHidden(false);
         signal('end', 'Сессия завершена', 'Откройте итоги');
@@ -159,14 +197,14 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
       await load();
       return;
     }
-    const remaining = tasksNow.filter((t) => t.status === 'in_progress').map((t) => toPlanTask(t, current));
+    const remaining = tasksNow.filter((t) => t.status === 'in_progress' && t.assignee_id === userId).map((t) => toPlanTask(t, current));
     const { keep, added } = replan(timed, Date.now(), remaining, mode);
     const last = keep.length - 1;
     if (last >= 0 && keep[last].minutes !== blocks[last].planned_min) {
-      await dataService.setBlockMinutes(blocks[last].id, keep[last].minutes);
+      await api.setBlockMinutes(blocks[last].id, keep[last].minutes);
     }
-    await dataService.deleteBlocks(blocks.slice(keep.length).map((b) => b.id));
-    await dataService.insertBlocks(
+    await api.deleteBlocks(blocks.slice(keep.length).map((b) => b.id));
+    await api.insertBlocks(
       session.id,
       added.map((b, i) => ({
         task_id: b.taskId,
@@ -177,7 +215,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
       })),
     );
     // Блоков больше не осталось: сессию нужно завершить сразу
-    if (keep.length + added.length === 0) await dataService.finishSession(session.id);
+    if (keep.length + added.length === 0) await api.finishSession(session.id);
     await load();
   };
 
@@ -186,7 +224,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
       if (previewPlan.length === 0 || !windowValid || !fitsWindow(previewPlan, windowMin)) return;
       unlockAudio();
       void askPermission();
-      const s = await dataService.createSession(workspaceId, userId, windowMin);
+      const s = await api.createSession(workspaceId, userId, windowMin);
       const rows = schedule(previewPlan, new Date(s.started_at).getTime()).map((b, i) => ({
         task_id: b.taskId,
         position: i,
@@ -195,10 +233,10 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
         started_at: new Date(b.startMs).toISOString(),
       }));
       try {
-        await dataService.insertBlocks(s.id, rows);
+        await api.insertBlocks(s.id, rows);
       } catch (e) {
         // Сессия без блоков бесполезна и мешает начать новую (активная сессия может быть только одна)
-        await dataService.deleteSession(s.id);
+        await api.deleteSession(s.id);
         throw e;
       }
       setSummary(null);
@@ -207,7 +245,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
 
   const takeTask = (task: Task) =>
     run(async () => {
-      await dataService.updateTask(task.id, { status: 'in_progress' });
+      await api.updateTask(task.id, { status: 'in_progress' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'in_progress' as Status } : t));
       await doReplan(after, 'none');
     }, `take:${task.id}`);
@@ -215,14 +253,14 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
   const backToBacklog = (task: Task) =>
     run(async () => {
       if (session) return;
-      await dataService.updateTask(task.id, { status: 'backlog' });
+      await api.updateTask(task.id, { status: 'backlog' });
       await load();
     }, `back:${task.id}`);
 
   // Пауза задачи (не таймера): если задача активна, её время засчитывается, а следующая стартует сразу
   const pauseTask = (task: Task) =>
     run(async () => {
-      await dataService.updateTask(task.id, { status: 'paused' });
+      await api.updateTask(task.id, { status: 'paused' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'paused' as Status } : t));
       const activeNow = !!current && current.kind === 'work' && current.taskId === task.id;
       await doReplan(after, activeNow ? 'handover' : 'none');
@@ -230,7 +268,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
 
   const markDone = (task: Task) =>
     run(async () => {
-      await dataService.updateTask(task.id, { status: 'done' });
+      await api.updateTask(task.id, { status: 'done' });
       const after = tasks.map((t) => (t.id === task.id ? { ...t, status: 'done' as Status } : t));
       const activeNow = !!current && current.kind === 'work' && current.taskId === task.id;
       await doReplan(after, activeNow ? 'cut' : 'none');
@@ -238,7 +276,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
 
   const removeTask = (task: Task) =>
     run(async () => {
-      await dataService.deleteTask(task.id);
+      await api.deleteTask(task.id);
       await load();
     }, `remove:${task.id}`);
 
@@ -255,12 +293,12 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
     run(async () => {
       const editing = modal?.task ?? null;
       if (editing) {
-        await dataService.updateTask(editing.id, input);
+        await api.updateTask(editing.id, input);
         const after = tasks.map((t) => (t.id === editing.id ? { ...t, ...input } : t));
-        if (editing.status === 'in_progress') await doReplan(after, 'none');
+        if (editing.status === 'in_progress' && editing.assignee_id === userId) await doReplan(after, 'none');
         else await load();
       } else {
-        await dataService.createTask(workspaceId, input);
+        await api.createTask(workspaceId, input);
         await load();
       }
       setModal(null);
@@ -270,7 +308,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
     run(async () => {
       const editing = modal?.task ?? null;
       if (!editing) return;
-      await dataService.deleteTask(editing.id);
+      await api.deleteTask(editing.id);
       await load();
       setModal(null);
     }, 'delete');
@@ -279,14 +317,21 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
   const others = useMemo(
     () =>
       sortByUrgency(
-        tasks.filter((t) => t.status === 'backlog' || t.status === 'paused').map((t) => ({ ...t, createdAt: t.created_at })),
+        mine.filter((t) => t.status === 'backlog' || t.status === 'paused').map((t) => ({ ...t, createdAt: t.created_at })),
       ),
-    [tasks],
+    [mine],
   );
   const showAdvice = !adviceHidden && inWork.length === 1 && inWork[0].estimate_min > 30 && others.length > 0;
 
   const editingTask = modal?.task ?? null;
-  const canDelete = !!editingTask && !(session && editingTask.status === 'in_progress');
+  // Свою задачу нельзя удалить, пока она в плане сессии. Хост может удалять чужие, но не те, что в работе: у владельца может идти сессия
+  const canManage = (t: Task) => t.assignee_id === userId || isHost;
+  const canDelete =
+    !!editingTask &&
+    canManage(editingTask) &&
+    (editingTask.assignee_id === userId ? !(session && editingTask.status === 'in_progress') : editingTask.status !== 'in_progress');
+  // Участники, которым можно поставить задачу
+  const assignable = people.filter((p) => p.active);
 
   if (!loaded && !error) {
     return (
@@ -303,6 +348,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
       {pending !== null && <div className='progress' aria-hidden='true' />}
       <header className='top'>
         <div className='brand'>Taska</div>
+        {headerSlot}
         <div className='top-r'>
           <span className='email'>{user.nickname}</span>
           <button className='link' onClick={onLogout}>
@@ -320,7 +366,7 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
         timed={timed}
         curIndex={curIndex}
         nowMs={nowMs}
-        tasks={tasks}
+        tasks={mine}
         inWork={inWork}
         previewPlan={previewPlan}
         windowMin={windowMin}
@@ -338,8 +384,13 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
           onDismiss={() => setAdviceHidden(true)}
         />
       )}
+      {cowork && <PeopleBar people={people} tasks={tasks} meId={userId} selected={filter} onSelect={setFilter} />}
       <Board
-        tasks={tasks}
+        tasks={visible}
+        meId={userId}
+        isHost={isHost}
+        people={peopleById}
+        showOwner={cowork}
         session={session}
         current={current}
         nowMs={nowMs}
@@ -356,6 +407,10 @@ export default function App({ user, onLogout }: { user: UserProfile; onLogout: (
       {modal && (
         <TaskModal
           task={editingTask}
+          meId={userId}
+          people={assignable}
+          canAssign={cowork && isHost}
+          defaultAssignee={filter !== 'all' && assignable.some((p) => p.id === filter) ? filter : userId}
           canDelete={canDelete}
           pending={pending}
           onSave={(input) => void saveTask(input)}
