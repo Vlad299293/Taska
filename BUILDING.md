@@ -33,6 +33,12 @@ npm run tauri build
 npx tauri build
 ```
 
+## 🪟 Установщик для пользователей (setup.exe)
+
+Собирается автоматически в GitHub Actions (`.github/workflows/release.yml`) на Windows: `git tag v0.3.0 && git push origin v0.3.0`
+(или Actions → Release → Run workflow). Готовый `Taska_*_x64-setup.exe` появляется на странице Releases репозитория.
+Установка без прав администратора, в меню «Пуск» появляется ярлык.
+
 ## 📦 Результаты сборки (Artifacts)
 
 После успешного завершения сборки готовые файлы будут находиться в директории `src-tauri/target/release/bundle/`.

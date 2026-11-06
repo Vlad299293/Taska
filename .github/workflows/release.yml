@@ -1,0 +1,37 @@
+name: Release
+
+# Установщик собирается автоматически и появляется на странице Releases.
+# Запуск: поставить тег (git tag v0.3.0 && git push origin v0.3.0)
+# или вручную: вкладка Actions → Release → Run workflow.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm test
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.run_number) }}
+          releaseName: 'Taska ${{ github.ref_type == ''tag'' && github.ref_name || github.run_number }}'
+          releaseBody: 'Скачайте файл `Taska_*_x64-setup.exe`, запустите его и следуйте шагам установщика. После установки Taska появится в меню «Пуск» и в поиске приложений.'
+          releaseDraft: false
+          prerelease: false
